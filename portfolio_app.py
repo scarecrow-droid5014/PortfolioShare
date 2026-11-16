@@ -322,7 +322,7 @@ with tab_reb:
     st.divider()
     st.subheader("2️⃣ 리밸런싱 주문 가이드")
 
-    # 3개 지표 카드의 숫자 잘림 방지를 위한 커스텀 HTML 카드 적용
+    # 상단 지표 카드
     m1, m2, m3 = st.columns(3)
     with m1:
         st.markdown(
@@ -399,20 +399,9 @@ with tab_reb:
         },
     )
 
+    # 원상복구된 깔끔한 기본 데이터프레임 출력
     df_reb = pd.DataFrame(reb_rows)
-    st.dataframe(
-        df_reb,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "종목명": st.column_config.TextColumn("종목명", width="medium"),
-            "목표비중": st.column_config.TextColumn("목표비중", width="small"),
-            "현재비중": st.column_config.TextColumn("현재비중", width="small"),
-            "현재평가금": st.column_config.TextColumn("현재평가금", width="medium"),
-            "목표평가금": st.column_config.TextColumn("목표평가금", width="medium"),
-            "매매가이드": st.column_config.TextColumn("매매가이드", width="large"),
-        },
-    )
+    st.dataframe(df_reb, use_container_width=True, hide_index=True)
 
     rec_date = st.date_input("기록 날짜", value=datetime.date.today())
     if st.button("💾 오늘 리밸런싱 내역 저장하기", use_container_width=True):
