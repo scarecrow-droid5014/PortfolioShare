@@ -30,7 +30,6 @@ st.markdown(
 )
 
 
-# --- GitHub API 영구 저장소 연동 (portfolio_data 폴더에 독립 저장) ---
 def get_github_config():
     token = st.secrets.get("GITHUB_TOKEN", "")
     repo = st.secrets.get("GITHUB_REPO", "scarecrow-droid5014/PortfolioShare")
@@ -118,7 +117,6 @@ def save_user_to_github(username: str, pin_hash: str, state_data: dict, sha: str
         return sha, f"GitHub 저장 실패 ({put_res.status_code}): {put_res.text}"
 
 
-# --- 실시간 VIX 및 환율 조회 ---
 @st.cache_data(ttl=1800)
 def fetch_market_indicators():
     vix_val = 15.0
@@ -145,17 +143,12 @@ def fetch_market_indicators():
 
 
 def calc_dynamic_cash_ratio(vix: float, max_cash_pct: float, use_vix_rule: bool) -> float:
-    """
-    시트 동일 VIX 연동 가변 현금비중 공식:
-    현금비중(%) = clamp(20.0 - VIX * 0.5, 0.0, max_cash_pct)
-    """
     if not use_vix_rule:
         return float(max_cash_pct)
     raw_pct = 20.0 - (vix * 0.5)
     return float(np.clip(raw_pct, 0.0, max_cash_pct))
 
 
-# --- 기본 포트폴리오 (시트 좌측 상단 종목 및 비중 동일) ---
 DEFAULT_ASSETS = [
     {"name": "미국채10년", "weight": 15.0},
     {"name": "국고채10년", "weight": 15.0},
@@ -176,8 +169,6 @@ DEFAULT_STATE = {
     "history": [],
 }
 
-
-# --- UI 렌더링 ---
 st.title("⚖️ 스마트 자산배분 포트폴리오")
 
 live_vix, live_fx = fetch_market_indicators()
@@ -192,7 +183,6 @@ if "pf_sha" not in st.session_state:
 if "pf_state" not in st.session_state:
     st.session_state.pf_state = json.loads(json.dumps(DEFAULT_STATE))
 
-# --- 자동 로그인 처리 (?u=닉네임&k=인증키) ---
 qp_user = st.query_params.get("u", "")
 qp_key = st.query_params.get("k", "")
 if not st.session_state.pf_user and qp_user and qp_key:
@@ -209,7 +199,6 @@ if not st.session_state.pf_user and qp_user and qp_key:
                 st.session_state.pf_sha = sha
                 st.session_state.pf_state = merged
 
-# --- 상단 로그인 바 ---
 if not st.session_state.pf_user:
     with st.expander("🔑 내 포트폴리오 불러오기 (또는 새 사용자 등록)", expanded=True):
         st.caption("닉네임과 비밀번호(PIN)를 입력하면 클라우드에 내 비중 설정과 리밸런싱 히스토리가 영구 저장됩니다.")
@@ -217,7 +206,7 @@ if not st.session_state.pf_user:
             lc1, lc2 = st.columns(2)
             in_user = lc1.text_input("닉네임 (영문/한글/숫자)", placeholder="예: lucas")
             in_pin = lc2.text_input("비밀번호 (PIN)", type="password", placeholder="4자리 이상")
-            remember_me = st.checkbox("📱 이 기기에서 자동 로그인 유지 (홈 화면 추가/북마크용)", value=True)
+            remember_me = st.checkbox("📱 이 기기에서 자동 로그인 유지", value=True)
             login_btn = st.form_submit_button("📂 불러오기 / 새 포트폴리오 시작", use_container_width=True)
 
             if login_btn:
@@ -320,14 +309,12 @@ with tab_reb:
             key=f"val_input_{idx}_{a_name}",
         )
 
-    # --- 시트 공식 그대로 집계 ---
     eval_sum = sum(current_vals.values())
     total_asset = eval_sum + cur_cash + add_deposit
     new_principal = base_principal + add_deposit
     cum_profit = total_asset - new_principal
     total_ret_pct = (cum_profit / new_principal * 100.0) if new_principal > 0 else 0.0
 
-    # 목표 예수금 & 주식 배분 총액
     target_cash_amt = round(total_asset * (target_cash_pct / 100.0))
     investable_amt = total_asset - target_cash_amt
     cash_diff = target_cash_amt - (cur_cash + add_deposit)
@@ -381,9 +368,22 @@ with tab_reb:
         },
     )
 
-    st.dataframe(pd.DataFrame(reb_rows), use_container_width=True, hide_index=True)
+    # 잘림 방지 설정이 적용된 데이터프레임 출력
+    df_reb = pd.DataFrame(reb_rows)
+    st.dataframe(
+        df_reb,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "종목명": st.column_config.TextColumn("종목명", width="medium"),
+            "목표비중": st.column_config.TextColumn("목표비중", width="small"),
+            "현재비중": st.column_config.TextColumn("현재비중", width="small"),
+            "현재평가금": st.column_config.TextColumn("현재평가금", width="medium"),
+            "목표평가금": st.column_config.TextColumn("목표평가금", width="medium"),
+            "매매가이드": st.column_config.TextColumn("매매가이드", width="large"),
+        },
+    )
 
-    # 기록 저장 폼
     rec_date = st.date_input("기록 날짜", value=datetime.date.today())
     if st.button("💾 오늘 리밸런싱 내역 저장하기", use_container_width=True):
         record_entry = {
@@ -404,7 +404,6 @@ with tab_reb:
         }
 
         history = state.get("history", [])
-        # 같은 날짜가 이미 있으면 덮어쓰기, 없으면 추가
         date_key = record_entry["날짜"]
         history = [h for h in history if h.get("날짜") != date_key]
         history.append(record_entry)
@@ -430,19 +429,16 @@ with tab_reb:
                 st.success(f"{date_key} 포트폴리오 기록이 클라우드에 저장되었습니다!")
                 st.rerun()
         else:
-            st.warning("로그인하지 않아 현재 브라우저 세션에만 임시 반영되었습니다. 상단에서 로그인해 주세요.")
+            st.warning("로그인하지 않아 현재 브라우저 세션에만 임시 반영되었습니다.")
 
 with tab_cfg:
     st.subheader("⚙️ 현금 규칙 및 종목 비중 편집")
-    st.caption("현금을 제외한 나머지 주식·자산 비중의 합계가 100%가 되도록 맞춰주세요 (최대 10종목).")
-
     with st.form("pf_config_form"):
         cc1, cc2, cc3 = st.columns(3)
         new_max_cash = cc1.number_input("최대 현금비중 (%)", min_value=0.0, max_value=50.0, value=max_cash_pct, step=1.0)
         new_use_vix = cc2.selectbox("VIX 연동 가변 현금", options=[True, False], index=0 if use_vix_rule else 1, format_func=lambda x: "사용 (20-0.5×VIX)" if x else "고정 비중")
         new_reb_day = cc3.number_input("매월 리밸런싱 일자", min_value=1, max_value=31, value=rebalance_day, step=1)
 
-        st.markdown("**종목 및 목표 비중 설정 (빈 칸으로 두면 제외됩니다)**")
         edited_assets = []
         for i in range(10):
             default_name = assets[i]["name"] if i < len(assets) else ""
@@ -486,26 +482,10 @@ with tab_cfg:
                 else:
                     st.rerun()
 
-    if st.button("🔄 기본 포트폴리오(시트 원본 6종목)로 되돌리기", use_container_width=True):
-        state["max_cash_pct"] = 15.0
-        state["use_vix_rule"] = True
-        state["rebalance_day"] = 20
-        state["assets"] = json.loads(json.dumps(DEFAULT_ASSETS))
-        st.session_state.pf_state = state
-        if st.session_state.pf_user:
-            new_sha, _ = save_user_to_github(
-                st.session_state.pf_user,
-                st.session_state.pf_pin_hash,
-                state,
-                st.session_state.pf_sha,
-            )
-            st.session_state.pf_sha = new_sha
-        st.rerun()
-
 with tab_hist:
     history = state.get("history", [])
     if not history:
-        st.info("아직 저장된 리밸런싱 기록이 없습니다. [⚖️ 리밸런싱 계산기] 탭에서 오늘 잔고를 입력하고 저장해 보세요.")
+        st.info("아직 저장된 리밸런싱 기록이 없습니다.")
     else:
         hist_df = pd.DataFrame(history)
         latest_h = hist_df.iloc[-1]
