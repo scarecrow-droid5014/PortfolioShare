@@ -322,10 +322,41 @@ with tab_reb:
     st.divider()
     st.subheader("2️⃣ 리밸런싱 주문 가이드")
 
+    # 3개 지표 카드의 숫자 잘림 방지를 위한 커스텀 HTML 카드 적용
     m1, m2, m3 = st.columns(3)
-    m1.metric("총 자산 (투입 포함)", f"{total_asset:,.0f}원", f"원금 {new_principal:,.0f}원")
-    m2.metric("누적 수익금", f"{cum_profit:+,.0f}원", f"{total_ret_pct:+.2f}%")
-    m3.metric("목표 예수금", f"{target_cash_amt:,.0f}원", f"{cash_diff:+,.0f}원 필요")
+    with m1:
+        st.markdown(
+            f"""
+            <div class="summary-card" style="text-align:center; padding:12px;">
+                <div style="font-size:0.8rem; color:#6c757d; font-weight:600;">총 자산 (투입 포함)</div>
+                <div style="font-size:1.05rem; font-weight:800; color:#111; margin:4px 0; word-break:break-all;">{total_asset:,.0f}원</div>
+                <div style="font-size:0.75rem; color:#0d6efd;">원금 {new_principal:,.0f}원</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with m2:
+        st.markdown(
+            f"""
+            <div class="summary-card" style="text-align:center; padding:12px;">
+                <div style="font-size:0.8rem; color:#6c757d; font-weight:600;">누적 수익금</div>
+                <div style="font-size:1.05rem; font-weight:800; color:{'#198754' if cum_profit >= 0 else '#dc3545'}; margin:4px 0; word-break:break-all;">{cum_profit:+,.0f}원</div>
+                <div style="font-size:0.75rem; color:#6c757d;">{total_ret_pct:+.2f}%</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with m3:
+        st.markdown(
+            f"""
+            <div class="summary-card" style="text-align:center; padding:12px;">
+                <div style="font-size:0.8rem; color:#6c757d; font-weight:600;">목표 예수금</div>
+                <div style="font-size:1.05rem; font-weight:800; color:#111; margin:4px 0; word-break:break-all;">{target_cash_amt:,.0f}원</div>
+                <div style="font-size:0.75rem; color:#d63384;">{cash_diff:+,.0f}원 필요</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     total_weight = sum(float(x["weight"]) for x in assets)
     reb_rows = []
@@ -368,7 +399,6 @@ with tab_reb:
         },
     )
 
-    # 잘림 방지 설정이 적용된 데이터프레임 출력
     df_reb = pd.DataFrame(reb_rows)
     st.dataframe(
         df_reb,
