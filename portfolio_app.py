@@ -357,7 +357,7 @@ with tab_reb:
         quotes = {}
         failed = []
         with st.spinner("pykrx로 네이버 금융 종가를 조회하는 중입니다."):
-            for ticker in dict.fromkeys(a["ticker"] for a in assets if a["quantity"] > 0):
+            for ticker in dict.fromkeys(a["ticker"] for a in assets):
                 try:
                     quotes[ticker] = fetch_krx_close(ticker, now)
                 except (ImportError, ValueError) as exc:
@@ -441,19 +441,23 @@ with tab_reb:
             diff_v = tgt_v - cur_v
             cur_share_pct = (cur_v / investable_amt * 100.0) if investable_amt > 0 else 0.0
 
-            if diff_v > 0:
-                action_str = f"🟢 +{diff_v:,.0f}원 매수"
-            elif diff_v < 0:
-                action_str = f"🔴 {diff_v:,.0f}원 매도"
-            else:
+            close = quotes[item["ticker"]][0]
+            order_quantity = abs(diff_v) // close
+            if order_quantity == 0:
                 action_str = "➖ 유지"
+            elif diff_v > 0:
+                estimated_amount = order_quantity * close
+                action_str = f"🟢 {order_quantity:,}주 매수 (약 {estimated_amount:,}원)"
+            else:
+                estimated_amount = order_quantity * close
+                action_str = f"🔴 {order_quantity:,}주 매도 (약 {estimated_amount:,}원)"
 
             reb_rows.append(
                 {
                     "종목명": a_name,
                     "종목코드": item["ticker"],
                     "보유 수량": item["quantity"],
-                    "종가": f"{quotes[item['ticker']][0]:,}원" if item["ticker"] in quotes else "—",
+                    "종가": f"{close:,}원",
                     "목표비중": f"{w_pct:.1f}%",
                     "현재비중": f"{cur_share_pct:.1f}%",
                     "현재평가금": f"{cur_v:,.0f}원",
@@ -477,6 +481,7 @@ with tab_reb:
         # 원상복구된 깔끔한 기본 데이터프레임 출력
         df_reb = pd.DataFrame(reb_rows)
         st.dataframe(df_reb, use_container_width=True, hide_index=True)
+        st.caption("주문 수량과 예상 금액은 조회한 종가 기준이며, 수수료는 제외됩니다.")
 
         rec_date = st.date_input("기록 날짜", value=datetime.date.today())
         if st.button("💾 오늘 리밸런싱 내역 저장하기", use_container_width=True):
