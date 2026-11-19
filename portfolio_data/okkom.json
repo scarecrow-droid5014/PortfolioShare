@@ -1,7 +1,7 @@
 {
   "username": "okkom",
   "pin_hash": "ade25c4b4274ba147ea79b17d8cea5240062968dd25483fc9b76b679eda7a72c",
-  "updated_at": "2026-11-19 08:31:10",
+  "updated_at": "2026-11-19 13:52:40",
   "data": {
     "max_cash_pct": 15.0,
     "use_vix_rule": true,
@@ -9,27 +9,39 @@
     "assets": [
       {
         "name": "미국채10년",
-        "weight": 15.0
+        "weight": 15.0,
+        "ticker": "305080",
+        "quantity": 0
       },
       {
         "name": "국고채10년",
-        "weight": 15.0
+        "weight": 15.0,
+        "ticker": "",
+        "quantity": 0
       },
       {
         "name": "타이거200",
-        "weight": 20.0
+        "weight": 20.0,
+        "ticker": "",
+        "quantity": 0
       },
       {
         "name": "나스닥100",
-        "weight": 15.0
+        "weight": 15.0,
+        "ticker": "",
+        "quantity": 0
       },
       {
         "name": "금",
-        "weight": 15.0
+        "weight": 15.0,
+        "ticker": "",
+        "quantity": 0
       },
       {
         "name": "S&P500",
-        "weight": 20.0
+        "weight": 20.0,
+        "ticker": "",
+        "quantity": 0
       }
     ],
     "latest_values": {
