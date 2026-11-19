@@ -329,6 +329,29 @@ with tab_reb:
                 f"미설정 종목: {', '.join(missing_tickers)}")
 
     if st.button("🔄 현재 평가금 갱신", use_container_width=True, disabled=bool(missing_tickers) or not assets):
+        if cur_cash != saved_cash:
+            updated_state = {**state, "latest_cash": int(cur_cash)}
+            if st.session_state.pf_user:
+                try:
+                    new_sha, save_error = save_user_to_github(
+                        st.session_state.pf_user,
+                        st.session_state.pf_pin_hash,
+                        updated_state,
+                        st.session_state.pf_sha,
+                    )
+                except requests.RequestException:
+                    save_error = "GitHub에 연결하지 못했습니다. 다시 갱신해 주세요."
+
+                if save_error:
+                    st.error(f"현재 예수금 저장 실패 · {save_error}")
+                else:
+                    st.session_state.pf_sha = new_sha
+                    st.session_state.pf_state = state = updated_state
+                    st.success("현재 예수금을 저장했습니다.")
+            else:
+                st.session_state.pf_state = state = updated_state
+                st.info("예수금을 이 세션에 반영했습니다. 새로고침 후에도 유지하려면 로그인해 주세요.")
+
         st.session_state.pop("pf_valuation", None)
         now = pd.Timestamp.now(tz="Asia/Seoul")
         quotes = {}
