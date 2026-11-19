@@ -3,4 +3,4 @@ yfinance
 pandas
 numpy
 requests
-pykrx
+pykrx>=1.2.8
