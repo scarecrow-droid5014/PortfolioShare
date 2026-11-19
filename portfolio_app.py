@@ -310,14 +310,14 @@ with tab_reb:
         unsafe_allow_html=True,
     )
 
-    st.subheader("1️⃣ 현재 계좌 잔고 입력")
-    saved_cash = int(state.get("latest_cash", 0))
-    saved_principal = int(state.get("total_principal", 0))
+    with st.expander("1️⃣ 현재 계좌 잔고 입력", expanded=False):
+        saved_cash = int(state.get("latest_cash", 0))
+        saved_principal = int(state.get("total_principal", 0))
 
-    c_top1, c_top2, c_top3 = st.columns(3)
-    cur_cash = c_top1.number_input("현재 예수금 (원)", min_value=0, value=saved_cash, step=10000)
-    add_deposit = c_top2.number_input("이번 달 추가 투입금 (원)", min_value=0, value=0, step=50000)
-    base_principal = c_top3.number_input("직전 누적 원금 (원)", min_value=0, value=saved_principal, step=100000)
+        c_top1, c_top2, c_top3 = st.columns(3)
+        cur_cash = c_top1.number_input("현재 예수금 (원)", min_value=0, value=saved_cash, step=10000)
+        add_deposit = c_top2.number_input("이번 달 추가 투입금 (원)", min_value=0, value=0, step=50000)
+        base_principal = c_top3.number_input("직전 누적 원금 (원)", min_value=0, value=saved_principal, step=100000)
 
     portfolio_key = (
         st.session_state.pf_user,
