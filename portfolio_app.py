@@ -3,6 +3,7 @@ import datetime
 import hashlib
 import json
 import re
+
 import numpy as np
 import pandas as pd
 import requests
@@ -16,7 +17,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# 모바일 친화적 스타일링
 st.markdown(
     """
     <style>
@@ -69,10 +69,9 @@ def load_user_from_github(username: str):
         body = res.json()
         raw_content = base64.b64decode(body["content"]).decode("utf-8")
         return json.loads(raw_content), body["sha"], None
-    elif res.status_code == 404:
+    if res.status_code == 404:
         return None, None, None
-    else:
-        return None, None, f"GitHub 조회 오류 ({res.status_code}): {res.text}"
+    return None, None, f"GitHub 조회 오류 ({res.status_code}): {res.text}"
 
 
 def save_user_to_github(username: str, pin_hash: str, state_data: dict, sha: str = None):
@@ -111,10 +110,8 @@ def save_user_to_github(username: str, pin_hash: str, state_data: dict, sha: str
 
     put_res = requests.put(url, headers=headers, json=body, timeout=10)
     if put_res.status_code in (200, 201):
-        new_sha = put_res.json().get("content", {}).get("sha")
-        return new_sha, None
-    else:
-        return sha, f"GitHub 저장 실패 ({put_res.status_code}): {put_res.text}"
+        return put_res.json().get("content", {}).get("sha"), None
+    return sha, f"GitHub 저장 실패 ({put_res.status_code}): {put_res.text}"
 
 
 @st.cache_data(ttl=1800)
@@ -140,6 +137,31 @@ def fetch_market_indicators():
         pass
 
     return vix_val, fx_val
+
+
+def fetch_krx_close(ticker, now):
+    from pykrx import stock
+
+    end = now.date()
+    if now.hour < 16:
+        end -= datetime.timedelta(days=1)
+    start = end - datetime.timedelta(days=14)
+    date_args = (start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), ticker)
+
+    # ETF와 일반 주식은 pykrx의 조회 함수가 다릅니다.
+    for fetch in (
+        stock.get_etf_ohlcv_by_date,
+        lambda *args: stock.get_market_ohlcv_by_date(*args, adjusted=False),
+    ):
+        try:
+            frame = fetch(*date_args)
+            closes = pd.to_numeric(frame.get("종가", pd.Series(dtype=float)), errors="coerce")
+            closes = closes[np.isfinite(closes) & (closes > 0)].sort_index()
+            if not closes.empty:
+                return int(closes.iloc[-1]), pd.Timestamp(closes.index[-1]).date()
+        except Exception:
+            continue
+    raise ValueError(f"{ticker}의 최근 종가를 조회하지 못했습니다.")
 
 
 def calc_dynamic_cash_ratio(vix: float, max_cash_pct: float, use_vix_rule: bool) -> float:
@@ -253,6 +275,7 @@ else:
         unsafe_allow_html=True,
     )
     if uc2.button("로그아웃", use_container_width=True):
+        st.session_state.pop("pf_valuation", None)
         st.session_state.pf_user = ""
         st.session_state.pf_pin_hash = ""
         st.session_state.pf_sha = None
@@ -266,7 +289,11 @@ max_cash_pct = float(state.get("max_cash_pct", 15.0))
 use_vix_rule = bool(state.get("use_vix_rule", True))
 rebalance_day = int(state.get("rebalance_day", 20))
 
-tab_reb, tab_cfg, tab_hist = st.tabs(["⚖️ 리밸런싱 계산기", "⚙️ 포트폴리오 비중 설정", "📈 수익률 및 히스토리"])
+tab_reb, tab_cfg, tab_hist = st.tabs([
+    "⚖️ 리밸런싱 계산기",
+    "⚙️ 포트폴리오 비중 설정",
+    "📈 수익률 및 히스토리",
+])
 
 with tab_reb:
     st.caption(f"정기 리밸런싱 기준일: 매달 {rebalance_day}일 · VIX 연동 가변 현금비중 적용")
@@ -287,7 +314,6 @@ with tab_reb:
     )
 
     st.subheader("1️⃣ 현재 계좌 잔고 입력")
-    saved_vals = state.get("latest_values", {})
     saved_cash = int(state.get("latest_cash", 0))
     saved_principal = int(state.get("total_principal", 0))
 
@@ -296,177 +322,249 @@ with tab_reb:
     add_deposit = c_top2.number_input("이번 달 추가 투입금 (원)", min_value=0, value=0, step=50000)
     base_principal = c_top3.number_input("직전 누적 원금 (원)", min_value=0, value=saved_principal, step=100000)
 
-    current_vals = {}
-    cols = st.columns(2)
-    for idx, item in enumerate(assets):
-        a_name = item["name"]
-        default_v = int(saved_vals.get(a_name, 0))
-        current_vals[a_name] = cols[idx % 2].number_input(
-            f"{a_name} 평가금 (목표 {item['weight']:.1f}%)",
-            min_value=0,
-            value=default_v,
-            step=10000,
-            key=f"val_input_{idx}_{a_name}",
+    portfolio_key = (
+        st.session_state.pf_user,
+        tuple((a["name"], a.get("ticker", ""), a.get("quantity", 0)) for a in assets),
+    )
+    missing_tickers = [a["name"] for a in assets if not a.get("ticker")]
+    if missing_tickers:
+        st.info(
+            "포트폴리오 비중 설정에서 종목코드와 보유 수량을 저장해 주세요. "
+            f"미설정 종목: {', '.join(missing_tickers)}"
         )
 
-    eval_sum = sum(current_vals.values())
-    total_asset = eval_sum + cur_cash + add_deposit
-    new_principal = base_principal + add_deposit
-    cum_profit = total_asset - new_principal
-    total_ret_pct = (cum_profit / new_principal * 100.0) if new_principal > 0 else 0.0
+    if st.button("🔄 현재 평가금 갱신", use_container_width=True, disabled=bool(missing_tickers) or not assets):
+        st.session_state.pop("pf_valuation", None)
+        now = pd.Timestamp.now(tz="Asia/Seoul")
+        quotes = {}
+        failed = []
+        with st.spinner("pykrx에서 국내 종목 종가를 조회하는 중입니다."):
+            for ticker in dict.fromkeys(a["ticker"] for a in assets if a["quantity"] > 0):
+                try:
+                    quotes[ticker] = fetch_krx_close(ticker, now)
+                except ImportError:
+                    failed.append("pykrx 설치가 필요합니다.")
+                    break
+                except ValueError as exc:
+                    failed.append(str(exc))
 
-    target_cash_amt = round(total_asset * (target_cash_pct / 100.0))
-    investable_amt = total_asset - target_cash_amt
-    cash_diff = target_cash_amt - (cur_cash + add_deposit)
+        if failed:
+            st.error(" ".join(failed) + " 종목코드를 확인하거나 다시 갱신해 주세요.")
+        else:
+            st.session_state.pf_valuation = (portfolio_key, quotes)
 
     st.divider()
     st.subheader("2️⃣ 리밸런싱 주문 가이드")
-
-    # 상단 지표 카드
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.markdown(
-            f"""
-            <div class="summary-card" style="text-align:center; padding:12px;">
-                <div style="font-size:0.8rem; color:#6c757d; font-weight:600;">총 자산 (투입 포함)</div>
-                <div style="font-size:1.05rem; font-weight:800; color:#111; margin:4px 0; word-break:break-all;">{total_asset:,.0f}원</div>
-                <div style="font-size:0.75rem; color:#0d6efd;">원금 {new_principal:,.0f}원</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with m2:
-        st.markdown(
-            f"""
-            <div class="summary-card" style="text-align:center; padding:12px;">
-                <div style="font-size:0.8rem; color:#6c757d; font-weight:600;">누적 수익금</div>
-                <div style="font-size:1.05rem; font-weight:800; color:{'#198754' if cum_profit >= 0 else '#dc3545'}; margin:4px 0; word-break:break-all;">{cum_profit:+,.0f}원</div>
-                <div style="font-size:0.75rem; color:#6c757d;">{total_ret_pct:+.2f}%</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with m3:
-        st.markdown(
-            f"""
-            <div class="summary-card" style="text-align:center; padding:12px;">
-                <div style="font-size:0.8rem; color:#6c757d; font-weight:600;">목표 예수금</div>
-                <div style="font-size:1.05rem; font-weight:800; color:#111; margin:4px 0; word-break:break-all;">{target_cash_amt:,.0f}원</div>
-                <div style="font-size:0.75rem; color:#d63384;">{cash_diff:+,.0f}원 필요</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    total_weight = sum(float(x["weight"]) for x in assets)
-    reb_rows = []
-    for item in assets:
-        a_name = item["name"]
-        w_pct = float(item["weight"])
-        norm_ratio = (w_pct / total_weight) if total_weight > 0 else 0.0
-        cur_v = current_vals[a_name]
-        tgt_v = round(investable_amt * norm_ratio)
-        diff_v = tgt_v - cur_v
-        cur_share_pct = (cur_v / investable_amt * 100.0) if investable_amt > 0 else 0.0
-
-        if diff_v > 0:
-            action_str = f"🟢 +{diff_v:,.0f}원 매수"
-        elif diff_v < 0:
-            action_str = f"🔴 {diff_v:,.0f}원 매도"
-        else:
-            action_str = "➖ 유지"
-
-        reb_rows.append(
-            {
-                "종목명": a_name,
-                "목표비중": f"{w_pct:.1f}%",
-                "현재비중": f"{cur_share_pct:.1f}%",
-                "현재평가금": f"{cur_v:,.0f}원",
-                "목표평가금": f"{tgt_v:,.0f}원",
-                "매매가이드": action_str,
-            }
-        )
-
-    reb_rows.insert(
-        0,
-        {
-            "종목명": "현금(예수금)",
-            "목표비중": f"{target_cash_pct:.2f}%",
-            "현재비중": f"{((cur_cash + add_deposit) / total_asset * 100.0) if total_asset > 0 else 0.0:.2f}%",
-            "현재평가금": f"{cur_cash + add_deposit:,.0f}원",
-            "목표평가금": f"{target_cash_amt:,.0f}원",
-            "매매가이드": f"{cash_diff:+,.0f}원",
-        },
-    )
-
-    # 원상복구된 깔끔한 기본 데이터프레임 출력
-    df_reb = pd.DataFrame(reb_rows)
-    st.dataframe(df_reb, use_container_width=True, hide_index=True)
-
-    rec_date = st.date_input("기록 날짜", value=datetime.date.today())
-    if st.button("💾 오늘 리밸런싱 내역 저장하기", use_container_width=True):
-        record_entry = {
-            "날짜": rec_date.strftime("%Y-%m-%d"),
-            "총자산": int(total_asset),
-            "원금": int(new_principal),
-            "총수익률(%)": round(total_ret_pct, 2),
-            "누적수익금": int(cum_profit),
-            "추가투입": int(add_deposit),
-            "예수금": int(cur_cash + add_deposit),
-            "목표예수금": int(target_cash_amt),
-            "평가금": int(eval_sum),
-            "VIX": float(input_vix),
-            "현금비중(%)": round(target_cash_pct, 2),
-            "환율": float(input_fx),
-            "환헷지(%)": int(hedge_pct),
-            "종목별평가금": current_vals,
+    valuation = st.session_state.get("pf_valuation")
+    if not valuation or valuation[0] != portfolio_key:
+        st.info("현재 평가금 갱신 버튼을 누르면 리밸런싱 주문 가이드가 표시됩니다.")
+    else:
+        quotes = valuation[1]
+        current_vals = {
+            a["name"]: quotes[a["ticker"]][0] * a["quantity"] if a["quantity"] > 0 else 0
+            for a in assets
         }
+        if quotes:
+            close_dates = sorted({date.isoformat() for _, date in quotes.values()})
+            st.caption(f"pykrx 종가 기준 거래일 · {', '.join(close_dates)}")
 
-        history = state.get("history", [])
-        date_key = record_entry["날짜"]
-        history = [h for h in history if h.get("날짜") != date_key]
-        history.append(record_entry)
-        history = sorted(history, key=lambda x: x["날짜"])
+        eval_sum = sum(current_vals.values())
+        total_asset = eval_sum + cur_cash + add_deposit
+        new_principal = base_principal + add_deposit
+        cum_profit = total_asset - new_principal
+        total_ret_pct = (cum_profit / new_principal * 100.0) if new_principal > 0 else 0.0
 
-        state["latest_values"] = current_vals
-        state["latest_cash"] = int(cur_cash + add_deposit)
-        state["total_principal"] = int(new_principal)
-        state["history"] = history
-        st.session_state.pf_state = state
+        target_cash_amt = round(total_asset * (target_cash_pct / 100.0))
+        investable_amt = total_asset - target_cash_amt
+        cash_diff = target_cash_amt - (cur_cash + add_deposit)
 
-        if st.session_state.pf_user:
-            new_sha, err = save_user_to_github(
-                st.session_state.pf_user,
-                st.session_state.pf_pin_hash,
-                state,
-                st.session_state.pf_sha,
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.markdown(
+                f"""
+                <div class="summary-card" style="text-align:center; padding:12px;">
+                    <div style="font-size:0.8rem; color:#6c757d; font-weight:600;">총 자산 (투입 포함)</div>
+                    <div style="font-size:1.05rem; font-weight:800; color:#111; margin:4px 0; word-break:break-all;">{total_asset:,.0f}원</div>
+                    <div style="font-size:0.75rem; color:#0d6efd;">원금 {new_principal:,.0f}원</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-            if err:
-                st.error(err)
+        with m2:
+            st.markdown(
+                f"""
+                <div class="summary-card" style="text-align:center; padding:12px;">
+                    <div style="font-size:0.8rem; color:#6c757d; font-weight:600;">누적 수익금</div>
+                    <div style="font-size:1.05rem; font-weight:800; color:{'#198754' if cum_profit >= 0 else '#dc3545'}; margin:4px 0; word-break:break-all;">{cum_profit:+,.0f}원</div>
+                    <div style="font-size:0.75rem; color:#6c757d;">{total_ret_pct:+.2f}%</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with m3:
+            st.markdown(
+                f"""
+                <div class="summary-card" style="text-align:center; padding:12px;">
+                    <div style="font-size:0.8rem; color:#6c757d; font-weight:600;">목표 예수금</div>
+                    <div style="font-size:1.05rem; font-weight:800; color:#111; margin:4px 0; word-break:break-all;">{target_cash_amt:,.0f}원</div>
+                    <div style="font-size:0.75rem; color:#d63384;">{cash_diff:+,.0f}원 필요</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        total_weight = sum(float(x["weight"]) for x in assets)
+        reb_rows = []
+        for item in assets:
+            a_name = item["name"]
+            w_pct = float(item["weight"])
+            norm_ratio = (w_pct / total_weight) if total_weight > 0 else 0.0
+            cur_v = current_vals[a_name]
+            tgt_v = round(investable_amt * norm_ratio)
+            diff_v = tgt_v - cur_v
+            cur_share_pct = (cur_v / investable_amt * 100.0) if investable_amt > 0 else 0.0
+
+            if diff_v > 0:
+                action_str = f"🟢 +{diff_v:,.0f}원 매수"
+            elif diff_v < 0:
+                action_str = f"🔴 {diff_v:,.0f}원 매도"
             else:
-                st.session_state.pf_sha = new_sha
-                st.success(f"{date_key} 포트폴리오 기록이 클라우드에 저장되었습니다!")
-                st.rerun()
-        else:
-            st.warning("로그인하지 않아 현재 브라우저 세션에만 임시 반영되었습니다.")
+                action_str = "➖ 유지"
+
+            reb_rows.append(
+                {
+                    "종목명": a_name,
+                    "종목코드": item["ticker"],
+                    "보유 수량": item["quantity"],
+                    "종가": f"{quotes[item['ticker']][0]:,}원" if item["ticker"] in quotes else "—",
+                    "목표비중": f"{w_pct:.1f}%",
+                    "현재비중": f"{cur_share_pct:.1f}%",
+                    "현재평가금": f"{cur_v:,.0f}원",
+                    "목표평가금": f"{tgt_v:,.0f}원",
+                    "매매가이드": action_str,
+                }
+            )
+
+        reb_rows.insert(
+            0,
+            {
+                "종목명": "현금(예수금)",
+                "목표비중": f"{target_cash_pct:.2f}%",
+                "현재비중": f"{((cur_cash + add_deposit) / total_asset * 100.0) if total_asset > 0 else 0.0:.2f}%",
+                "현재평가금": f"{cur_cash + add_deposit:,.0f}원",
+                "목표평가금": f"{target_cash_amt:,.0f}원",
+                "매매가이드": f"{cash_diff:+,.0f}원",
+            },
+        )
+
+        df_reb = pd.DataFrame(reb_rows)
+        st.dataframe(df_reb, use_container_width=True, hide_index=True)
+
+        rec_date = st.date_input("기록 날짜", value=datetime.date.today())
+        if st.button("💾 오늘 리밸런싱 내역 저장하기", use_container_width=True):
+            record_entry = {
+                "날짜": rec_date.strftime("%Y-%m-%d"),
+                "총자산": int(total_asset),
+                "원금": int(new_principal),
+                "총수익률(%)": round(total_ret_pct, 2),
+                "누적수익금": int(cum_profit),
+                "추가투입": int(add_deposit),
+                "예수금": int(cur_cash + add_deposit),
+                "목표예수금": int(target_cash_amt),
+                "평가금": int(eval_sum),
+                "VIX": float(input_vix),
+                "현금비중(%)": round(target_cash_pct, 2),
+                "환율": float(input_fx),
+                "환헷지(%)": int(hedge_pct),
+                "종목별평가금": current_vals,
+            }
+
+            history = state.get("history", [])
+            date_key = record_entry["날짜"]
+            history = [h for h in history if h.get("날짜") != date_key]
+            history.append(record_entry)
+            history = sorted(history, key=lambda x: x["날짜"])
+
+            state["latest_values"] = current_vals
+            state["latest_cash"] = int(cur_cash + add_deposit)
+            state["total_principal"] = int(new_principal)
+            state["history"] = history
+            st.session_state.pf_state = state
+
+            if st.session_state.pf_user:
+                new_sha, err = save_user_to_github(
+                    st.session_state.pf_user,
+                    st.session_state.pf_pin_hash,
+                    state,
+                    st.session_state.pf_sha,
+                )
+                if err:
+                    st.error(err)
+                else:
+                    st.session_state.pf_sha = new_sha
+                    st.success(f"{date_key} 포트폴리오 기록이 클라우드에 저장되었습니다!")
+                    st.rerun()
+            else:
+                st.warning("로그인하지 않아 현재 브라우저 세션에만 임시 반영되었습니다.")
 
 with tab_cfg:
-    st.subheader("⚙️ 현금 규칙 및 종목 비중 편집")
+    st.subheader("⚙️ 현금 규칙 및 보유 종목 편집")
     with st.form("pf_config_form"):
         cc1, cc2, cc3 = st.columns(3)
-        new_max_cash = cc1.number_input("최대 현금비중 (%)", min_value=0.0, max_value=50.0, value=max_cash_pct, step=1.0)
-        new_use_vix = cc2.selectbox("VIX 연동 가변 현금", options=[True, False], index=0 if use_vix_rule else 1, format_func=lambda x: "사용 (20-0.5×VIX)" if x else "고정 비중")
-        new_reb_day = cc3.number_input("매월 리밸런싱 일자", min_value=1, max_value=31, value=rebalance_day, step=1)
+        new_max_cash = cc1.number_input(
+            "최대 현금비중 (%)", min_value=0.0, max_value=50.0, value=max_cash_pct, step=1.0
+        )
+        new_use_vix = cc2.selectbox(
+            "VIX 연동 가변 현금",
+            options=[True, False],
+            index=0 if use_vix_rule else 1,
+            format_func=lambda x: "사용 (20-0.5×VIX)" if x else "고정 비중",
+        )
+        new_reb_day = cc3.number_input(
+            "매월 리밸런싱 일자", min_value=1, max_value=31, value=rebalance_day, step=1
+        )
 
         edited_assets = []
+        account = st.session_state.pf_user
         for i in range(10):
-            default_name = assets[i]["name"] if i < len(assets) else ""
-            default_w = float(assets[i]["weight"]) if i < len(assets) else 0.0
+            asset = assets[i] if i < len(assets) else {}
             ac1, ac2 = st.columns([2, 1])
-            n_val = ac1.text_input(f"종목 {i + 1}", value=default_name, key=f"cfg_name_{i}", placeholder="종목명 입력")
-            w_val = ac2.number_input(f"비중 (%) #{i + 1}", min_value=0.0, max_value=100.0, value=default_w, step=1.0, key=f"cfg_w_{i}")
-            if n_val.strip() and w_val > 0:
-                edited_assets.append({"name": n_val.strip(), "weight": float(w_val)})
+            n_val = ac1.text_input(
+                f"종목 {i + 1}",
+                value=asset.get("name", ""),
+                key=f"cfg_name_{account}_{i}",
+                placeholder="종목명 입력",
+            )
+            w_val = ac2.number_input(
+                f"비중 (%) #{i + 1}",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(asset.get("weight", 0)),
+                step=1.0,
+                key=f"cfg_w_{account}_{i}",
+            )
+            ac3, ac4 = st.columns([2, 1])
+            ticker = ac3.text_input(
+                f"종목코드 #{i + 1}",
+                value=asset.get("ticker", ""),
+                key=f"cfg_ticker_{account}_{i}",
+                placeholder="예: 005930",
+                max_chars=6,
+            )
+            quantity = ac4.number_input(
+                f"보유 수량 (주) #{i + 1}",
+                min_value=0,
+                value=int(asset.get("quantity", 0)),
+                step=1,
+                key=f"cfg_quantity_{account}_{i}",
+            )
+            if n_val.strip() or w_val or ticker.strip() or quantity:
+                edited_assets.append({
+                    "name": n_val.strip(),
+                    "weight": float(w_val),
+                    "ticker": ticker.strip().upper(),
+                    "quantity": int(quantity),
+                })
 
         weight_sum = sum(x["weight"] for x in edited_assets)
         if abs(weight_sum - 100.0) < 0.01:
@@ -476,29 +574,38 @@ with tab_cfg:
 
         save_pf_cfg = st.form_submit_button("💾 포트폴리오 구성 저장하기", use_container_width=True)
         if save_pf_cfg:
-            if not edited_assets:
-                st.error("최소 1개 이상의 종목과 비중을 입력해 주세요.")
+            names = [a["name"] for a in edited_assets]
+            if not edited_assets or not weight_sum:
+                st.error("최소 1개 종목에 목표 비중을 입력해 주세요.")
+            elif not all(names) or len(set(names)) != len(names):
+                st.error("입력한 각 행에 서로 다른 종목명을 입력해 주세요.")
+            elif any(a["ticker"] and not re.fullmatch(r"[0-9A-Z]{6}", a["ticker"]) for a in edited_assets):
+                st.error("종목코드는 6자리로 입력해 주세요. 예: 005930")
+            elif any(a["quantity"] > 0 and not a["ticker"] for a in edited_assets):
+                st.error("보유 수량이 있는 종목에는 종목코드를 입력해 주세요.")
             else:
-                state["max_cash_pct"] = float(new_max_cash)
-                state["use_vix_rule"] = bool(new_use_vix)
-                state["rebalance_day"] = int(new_reb_day)
-                state["assets"] = edited_assets
-                st.session_state.pf_state = state
-
+                updated_state = {
+                    **state,
+                    "max_cash_pct": float(new_max_cash),
+                    "use_vix_rule": bool(new_use_vix),
+                    "rebalance_day": int(new_reb_day),
+                    "assets": edited_assets,
+                }
+                err = None
                 if st.session_state.pf_user:
                     new_sha, err = save_user_to_github(
                         st.session_state.pf_user,
                         st.session_state.pf_pin_hash,
-                        state,
+                        updated_state,
                         st.session_state.pf_sha,
                     )
-                    if err:
-                        st.error(err)
-                    else:
+                    if not err:
                         st.session_state.pf_sha = new_sha
-                        st.success("포트폴리오 구성이 클라우드에 저장되었습니다!")
-                        st.rerun()
+                if err:
+                    st.error(err)
                 else:
+                    st.session_state.pf_state = updated_state
+                    st.session_state.pop("pf_valuation", None)
                     st.rerun()
 
 with tab_hist:
@@ -515,7 +622,10 @@ with tab_hist:
 
         st.line_chart(hist_df.set_index("날짜")[["총자산", "원금"]])
 
-        display_cols = ["날짜", "총자산", "원금", "총수익률(%)", "누적수익금", "추가투입", "예수금", "목표예수금", "VIX", "현금비중(%)", "환율"]
+        display_cols = [
+            "날짜", "총자산", "원금", "총수익률(%)", "누적수익금", "추가투입",
+            "예수금", "목표예수금", "VIX", "현금비중(%)", "환율",
+        ]
         avail_cols = [c for c in display_cols if c in hist_df.columns]
         st.dataframe(hist_df[avail_cols].iloc[::-1], use_container_width=True, hide_index=True)
 
