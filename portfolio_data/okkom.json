@@ -1,7 +1,7 @@
 {
   "username": "okkom",
   "pin_hash": "ade25c4b4274ba147ea79b17d8cea5240062968dd25483fc9b76b679eda7a72c",
-  "updated_at": "2026-11-19 13:54:55",
+  "updated_at": "2026-11-19 14:12:05",
   "data": {
     "max_cash_pct": 15.0,
     "use_vix_rule": true,
@@ -52,7 +52,7 @@
       "금": 1666161,
       "S&P500": 2247500
     },
-    "latest_cash": 1660732,
+    "latest_cash": 1679981,
     "total_principal": 10007113,
     "history": [
       {
