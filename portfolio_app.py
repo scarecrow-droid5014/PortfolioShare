@@ -276,7 +276,6 @@ else:
         unsafe_allow_html=True,
     )
     if uc2.button("로그아웃", use_container_width=True):
-        st.session_state.pop("pf_valuation", None)
         st.session_state.pf_user = ""
         st.session_state.pf_pin_hash = ""
         st.session_state.pf_sha = None
@@ -319,18 +318,38 @@ with tab_reb:
         add_deposit = c_top2.number_input("이번 달 추가 투입금 (원)", min_value=0, value=0, step=50000)
         base_principal = c_top3.number_input("직전 누적 원금 (원)", min_value=0, value=saved_principal, step=100000)
 
-    portfolio_key = (
-        st.session_state.pf_user,
-        tuple((a["name"], a.get("ticker", ""), a.get("quantity", 0)) for a in assets),
-    )
     missing_tickers = [a["name"] for a in assets if not a.get("ticker")]
+    tickers = list(dict.fromkeys(a["ticker"] for a in assets if a.get("ticker")))
     if missing_tickers:
-        st.info("포트폴리오 비중 설정에서 종목코드와 보유 수량을 저장해 주세요. "
-                f"미설정 종목: {', '.join(missing_tickers)}")
+        st.info(
+            "포트폴리오 비중 설정에서 종목코드와 보유 수량을 저장해 주세요. "
+            f"미설정 종목: {', '.join(missing_tickers)}"
+        )
 
     if st.button("🔄 현재 평가금 갱신", use_container_width=True, disabled=bool(missing_tickers) or not assets):
-        if cur_cash != saved_cash:
-            updated_state = {**state, "latest_cash": int(cur_cash)}
+        now = pd.Timestamp.now(tz="Asia/Seoul")
+        quotes = {}
+        failed = []
+        with st.spinner("pykrx로 네이버 금융 종가를 조회하는 중입니다."):
+            for ticker in tickers:
+                try:
+                    close, trade_date = fetch_krx_close(ticker, now)
+                    quotes[ticker] = [close, trade_date.isoformat()]
+                except (ImportError, ValueError) as exc:
+                    failed.append(str(exc) if isinstance(exc, ValueError) else "pykrx 설치가 필요합니다.")
+                    if isinstance(exc, ImportError):
+                        break
+
+        updated_state = {**state, "latest_cash": int(cur_cash)}
+        if failed:
+            st.error(" ".join(failed))
+            if tickers and all(ticker in state.get("latest_quotes", {}) for ticker in tickers):
+                st.info("새 시세를 가져오지 못해 마지막으로 저장된 종가를 표시합니다.")
+        else:
+            updated_state["latest_quotes"] = quotes
+
+        if updated_state != state:
+            save_error = None
             if st.session_state.pf_user:
                 try:
                     new_sha, save_error = save_user_to_github(
@@ -341,47 +360,29 @@ with tab_reb:
                     )
                 except requests.RequestException:
                     save_error = "GitHub에 연결하지 못했습니다. 다시 갱신해 주세요."
-
-                if save_error:
-                    st.error(f"현재 예수금 저장 실패 · {save_error}")
-                else:
+                if not save_error:
                     st.session_state.pf_sha = new_sha
-                    st.session_state.pf_state = state = updated_state
-                    st.success("현재 예수금을 저장했습니다.")
+
+            if save_error:
+                st.error(f"갱신 내용 저장 실패 · {save_error}")
             else:
                 st.session_state.pf_state = state = updated_state
-                st.info("예수금을 이 세션에 반영했습니다. 새로고침 후에도 유지하려면 로그인해 주세요.")
-
-        st.session_state.pop("pf_valuation", None)
-        now = pd.Timestamp.now(tz="Asia/Seoul")
-        quotes = {}
-        failed = []
-        with st.spinner("pykrx로 네이버 금융 종가를 조회하는 중입니다."):
-            for ticker in dict.fromkeys(a["ticker"] for a in assets):
-                try:
-                    quotes[ticker] = fetch_krx_close(ticker, now)
-                except (ImportError, ValueError) as exc:
-                    failed.append(str(exc) if isinstance(exc, ValueError) else "pykrx 설치가 필요합니다.")
-                    if isinstance(exc, ImportError):
-                        break
-        if failed:
-            st.error(" ".join(failed) + " 종목코드를 확인하거나 다시 갱신해 주세요.")
-        else:
-            st.session_state.pf_valuation = (portfolio_key, quotes)
+                if not st.session_state.pf_user:
+                    st.info("이 세션에 반영했습니다. 새로고침 후에도 유지하려면 로그인해 주세요.")
 
     st.divider()
     st.subheader("2️⃣ 리밸런싱 주문 가이드")
-    valuation = st.session_state.get("pf_valuation")
-    if not valuation or valuation[0] != portfolio_key:
-        st.info("현재 평가금 갱신 버튼을 누르면 리밸런싱 주문 가이드가 표시됩니다.")
+    saved_quotes = state.get("latest_quotes", {})
+    if missing_tickers or not tickers or any(ticker not in saved_quotes for ticker in tickers):
+        st.info("현재 평가금 갱신 버튼으로 종가를 한 번 불러오면 주문 가이드가 표시됩니다.")
     else:
-        quotes = valuation[1]
+        quotes = {ticker: saved_quotes[ticker] for ticker in tickers}
         current_vals = {
             a["name"]: quotes[a["ticker"]][0] * a["quantity"] if a["quantity"] > 0 else 0
             for a in assets
         }
         if quotes:
-            close_dates = sorted({date.isoformat() for _, date in quotes.values()})
+            close_dates = sorted({date for _, date in quotes.values()})
             st.caption(f"네이버 금융 수정종가 기준 거래일 · {', '.join(close_dates)}")
 
         eval_sum = sum(current_vals.values())
@@ -600,7 +601,6 @@ with tab_cfg:
                     st.error(err)
                 else:
                     st.session_state.pf_state = updated_state
-                    st.session_state.pop("pf_valuation", None)
                     st.rerun()
 
 with tab_hist:
