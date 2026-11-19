@@ -3,7 +3,6 @@ import datetime
 import hashlib
 import json
 import re
-
 import numpy as np
 import pandas as pd
 import requests
@@ -17,6 +16,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# 모바일 친화적 스타일링
 st.markdown(
     """
     <style>
@@ -69,9 +69,10 @@ def load_user_from_github(username: str):
         body = res.json()
         raw_content = base64.b64decode(body["content"]).decode("utf-8")
         return json.loads(raw_content), body["sha"], None
-    if res.status_code == 404:
+    elif res.status_code == 404:
         return None, None, None
-    return None, None, f"GitHub 조회 오류 ({res.status_code}): {res.text}"
+    else:
+        return None, None, f"GitHub 조회 오류 ({res.status_code}): {res.text}"
 
 
 def save_user_to_github(username: str, pin_hash: str, state_data: dict, sha: str = None):
@@ -110,8 +111,10 @@ def save_user_to_github(username: str, pin_hash: str, state_data: dict, sha: str
 
     put_res = requests.put(url, headers=headers, json=body, timeout=10)
     if put_res.status_code in (200, 201):
-        return put_res.json().get("content", {}).get("sha"), None
-    return sha, f"GitHub 저장 실패 ({put_res.status_code}): {put_res.text}"
+        new_sha = put_res.json().get("content", {}).get("sha")
+        return new_sha, None
+    else:
+        return sha, f"GitHub 저장 실패 ({put_res.status_code}): {put_res.text}"
 
 
 @st.cache_data(ttl=1800)
@@ -146,22 +149,20 @@ def fetch_krx_close(ticker, now):
     if now.hour < 16:
         end -= datetime.timedelta(days=1)
     start = end - datetime.timedelta(days=14)
-    date_args = (start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), ticker)
 
-    # ETF와 일반 주식은 pykrx의 조회 함수가 다릅니다.
-    for fetch in (
-        stock.get_etf_ohlcv_by_date,
-        lambda *args: stock.get_market_ohlcv_by_date(*args, adjusted=False),
-    ):
-        try:
-            frame = fetch(*date_args)
-            closes = pd.to_numeric(frame.get("종가", pd.Series(dtype=float)), errors="coerce")
-            closes = closes[np.isfinite(closes) & (closes > 0)].sort_index()
-            if not closes.empty:
-                return int(closes.iloc[-1]), pd.Timestamp(closes.index[-1]).date()
-        except Exception:
-            continue
-    raise ValueError(f"{ticker}의 최근 종가를 조회하지 못했습니다.")
+    # adjusted=True uses pykrx's public Naver Finance route.
+    try:
+        frame = stock.get_market_ohlcv_by_date(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), ticker, adjusted=True
+        )
+        closes = pd.to_numeric(frame.get("종가", pd.Series(dtype=float)), errors="coerce")
+        closes = closes[np.isfinite(closes) & (closes > 0)].sort_index()
+        if not closes.empty:
+            return int(closes.iloc[-1]), pd.Timestamp(closes.index[-1]).date()
+    except Exception as exc:
+        raise ValueError(f"{ticker}의 네이버 금융 시세 조회에 실패했습니다.") from exc
+
+    raise ValueError(f"{ticker}의 최근 종가를 찾지 못했습니다.")
 
 
 def calc_dynamic_cash_ratio(vix: float, max_cash_pct: float, use_vix_rule: bool) -> float:
@@ -289,11 +290,7 @@ max_cash_pct = float(state.get("max_cash_pct", 15.0))
 use_vix_rule = bool(state.get("use_vix_rule", True))
 rebalance_day = int(state.get("rebalance_day", 20))
 
-tab_reb, tab_cfg, tab_hist = st.tabs([
-    "⚖️ 리밸런싱 계산기",
-    "⚙️ 포트폴리오 비중 설정",
-    "📈 수익률 및 히스토리",
-])
+tab_reb, tab_cfg, tab_hist = st.tabs(["⚖️ 리밸런싱 계산기", "⚙️ 포트폴리오 비중 설정", "📈 수익률 및 히스토리"])
 
 with tab_reb:
     st.caption(f"정기 리밸런싱 기준일: 매달 {rebalance_day}일 · VIX 연동 가변 현금비중 적용")
@@ -328,26 +325,22 @@ with tab_reb:
     )
     missing_tickers = [a["name"] for a in assets if not a.get("ticker")]
     if missing_tickers:
-        st.info(
-            "포트폴리오 비중 설정에서 종목코드와 보유 수량을 저장해 주세요. "
-            f"미설정 종목: {', '.join(missing_tickers)}"
-        )
+        st.info("포트폴리오 비중 설정에서 종목코드와 보유 수량을 저장해 주세요. "
+                f"미설정 종목: {', '.join(missing_tickers)}")
 
     if st.button("🔄 현재 평가금 갱신", use_container_width=True, disabled=bool(missing_tickers) or not assets):
         st.session_state.pop("pf_valuation", None)
         now = pd.Timestamp.now(tz="Asia/Seoul")
         quotes = {}
         failed = []
-        with st.spinner("pykrx에서 국내 종목 종가를 조회하는 중입니다."):
+        with st.spinner("pykrx로 네이버 금융 종가를 조회하는 중입니다."):
             for ticker in dict.fromkeys(a["ticker"] for a in assets if a["quantity"] > 0):
                 try:
                     quotes[ticker] = fetch_krx_close(ticker, now)
-                except ImportError:
-                    failed.append("pykrx 설치가 필요합니다.")
-                    break
-                except ValueError as exc:
-                    failed.append(str(exc))
-
+                except (ImportError, ValueError) as exc:
+                    failed.append(str(exc) if isinstance(exc, ValueError) else "pykrx 설치가 필요합니다.")
+                    if isinstance(exc, ImportError):
+                        break
         if failed:
             st.error(" ".join(failed) + " 종목코드를 확인하거나 다시 갱신해 주세요.")
         else:
@@ -366,7 +359,7 @@ with tab_reb:
         }
         if quotes:
             close_dates = sorted({date.isoformat() for _, date in quotes.values()})
-            st.caption(f"pykrx 종가 기준 거래일 · {', '.join(close_dates)}")
+            st.caption(f"네이버 금융 수정종가 기준 거래일 · {', '.join(close_dates)}")
 
         eval_sum = sum(current_vals.values())
         total_asset = eval_sum + cur_cash + add_deposit
@@ -378,6 +371,7 @@ with tab_reb:
         investable_amt = total_asset - target_cash_amt
         cash_diff = target_cash_amt - (cur_cash + add_deposit)
 
+        # 상단 지표 카드
         m1, m2, m3 = st.columns(3)
         with m1:
             st.markdown(
@@ -457,6 +451,7 @@ with tab_reb:
             },
         )
 
+        # 원상복구된 깔끔한 기본 데이터프레임 출력
         df_reb = pd.DataFrame(reb_rows)
         st.dataframe(df_reb, use_container_width=True, hide_index=True)
 
@@ -511,53 +506,25 @@ with tab_cfg:
     st.subheader("⚙️ 현금 규칙 및 보유 종목 편집")
     with st.form("pf_config_form"):
         cc1, cc2, cc3 = st.columns(3)
-        new_max_cash = cc1.number_input(
-            "최대 현금비중 (%)", min_value=0.0, max_value=50.0, value=max_cash_pct, step=1.0
-        )
-        new_use_vix = cc2.selectbox(
-            "VIX 연동 가변 현금",
-            options=[True, False],
-            index=0 if use_vix_rule else 1,
-            format_func=lambda x: "사용 (20-0.5×VIX)" if x else "고정 비중",
-        )
-        new_reb_day = cc3.number_input(
-            "매월 리밸런싱 일자", min_value=1, max_value=31, value=rebalance_day, step=1
-        )
+        new_max_cash = cc1.number_input("최대 현금비중 (%)", min_value=0.0, max_value=50.0, value=max_cash_pct, step=1.0)
+        new_use_vix = cc2.selectbox("VIX 연동 가변 현금", options=[True, False], index=0 if use_vix_rule else 1, format_func=lambda x: "사용 (20-0.5×VIX)" if x else "고정 비중")
+        new_reb_day = cc3.number_input("매월 리밸런싱 일자", min_value=1, max_value=31, value=rebalance_day, step=1)
 
         edited_assets = []
-        account = st.session_state.pf_user
         for i in range(10):
             asset = assets[i] if i < len(assets) else {}
+            account = st.session_state.pf_user
             ac1, ac2 = st.columns([2, 1])
-            n_val = ac1.text_input(
-                f"종목 {i + 1}",
-                value=asset.get("name", ""),
-                key=f"cfg_name_{account}_{i}",
-                placeholder="종목명 입력",
-            )
-            w_val = ac2.number_input(
-                f"비중 (%) #{i + 1}",
-                min_value=0.0,
-                max_value=100.0,
-                value=float(asset.get("weight", 0)),
-                step=1.0,
-                key=f"cfg_w_{account}_{i}",
-            )
+            n_val = ac1.text_input(f"종목 {i + 1}", value=asset.get("name", ""),
+                                   key=f"cfg_name_{account}_{i}", placeholder="종목명 입력")
+            w_val = ac2.number_input(f"비중 (%) #{i + 1}", min_value=0.0, max_value=100.0,
+                                     value=float(asset.get("weight", 0)), step=1.0, key=f"cfg_w_{account}_{i}")
             ac3, ac4 = st.columns([2, 1])
-            ticker = ac3.text_input(
-                f"종목코드 #{i + 1}",
-                value=asset.get("ticker", ""),
-                key=f"cfg_ticker_{account}_{i}",
-                placeholder="예: 005930",
-                max_chars=6,
-            )
-            quantity = ac4.number_input(
-                f"보유 수량 (주) #{i + 1}",
-                min_value=0,
-                value=int(asset.get("quantity", 0)),
-                step=1,
-                key=f"cfg_quantity_{account}_{i}",
-            )
+            ticker = ac3.text_input(f"종목코드 #{i + 1}", value=asset.get("ticker", ""),
+                                    key=f"cfg_ticker_{account}_{i}", placeholder="예: 005930", max_chars=6)
+            quantity = ac4.number_input(f"보유 수량 (주) #{i + 1}", min_value=0,
+                                        value=int(asset.get("quantity", 0)), step=1,
+                                        key=f"cfg_quantity_{account}_{i}")
             if n_val.strip() or w_val or ticker.strip() or quantity:
                 edited_assets.append({
                     "name": n_val.strip(),
@@ -622,10 +589,7 @@ with tab_hist:
 
         st.line_chart(hist_df.set_index("날짜")[["총자산", "원금"]])
 
-        display_cols = [
-            "날짜", "총자산", "원금", "총수익률(%)", "누적수익금", "추가투입",
-            "예수금", "목표예수금", "VIX", "현금비중(%)", "환율",
-        ]
+        display_cols = ["날짜", "총자산", "원금", "총수익률(%)", "누적수익금", "추가투입", "예수금", "목표예수금", "VIX", "현금비중(%)", "환율"]
         avail_cols = [c for c in display_cols if c in hist_df.columns]
         st.dataframe(hist_df[avail_cols].iloc[::-1], use_container_width=True, hide_index=True)
 
