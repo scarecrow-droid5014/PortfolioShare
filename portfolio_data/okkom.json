@@ -1,7 +1,7 @@
 {
   "username": "okkom",
   "pin_hash": "ade25c4b4274ba147ea79b17d8cea5240062968dd25483fc9b76b679eda7a72c",
-  "updated_at": "2026-11-19 13:53:58",
+  "updated_at": "2026-11-19 13:54:39",
   "data": {
     "max_cash_pct": 15.0,
     "use_vix_rule": true,
@@ -34,14 +34,14 @@
       {
         "name": "금",
         "weight": 15.0,
-        "ticker": "",
-        "quantity": 0
+        "ticker": "411060",
+        "quantity": 63
       },
       {
         "name": "S&P500",
         "weight": 20.0,
-        "ticker": "",
-        "quantity": 0
+        "ticker": "448290",
+        "quantity": 125
       }
     ],
     "latest_values": {
